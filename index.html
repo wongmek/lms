@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interactive Video LMS (Auto Transcript)</title>
+    <title>Interactive Video LMS (Playlist & Realtime Editor)</title>
     
     <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
@@ -42,7 +42,7 @@
     const mockBackend = (action, data) => {
         return new Promise(resolve => {
             setTimeout(() => {
-                const videos = JSON.parse(localStorage.getItem('lms_videos_v3') || '[]');
+                const videos = JSON.parse(localStorage.getItem('lms_videos_v4') || '[]');
                 if (action === 'login') {
                     if(data.username==='teacher') resolve({status:'success', user:{username:'teacher', role:'teacher', name:'Teacher Demo'}});
                     else if(data.username==='student') resolve({status:'success', user:{username:'student', role:'student', name:'Student Demo'}});
@@ -50,20 +50,26 @@
                 }
                 else if (action === 'getVideos') resolve({ status: 'success', data: videos });
                 else if (action === 'saveVideo') {
-                    let newVideos = [...videos, { ...data, id: Date.now().toString() }];
-                    localStorage.setItem('lms_videos_v3', JSON.stringify(newVideos));
+                    // Smart Save: Check if updating existing or new
+                    let newVideos = [...videos];
+                    const existingIndex = newVideos.findIndex(v => v.id === data.id);
+                    const videoData = { ...data, id: data.id || Date.now().toString(), created_at: new Date() };
+                    
+                    if (existingIndex >= 0) newVideos[existingIndex] = videoData;
+                    else newVideos.push(videoData);
+                    
+                    localStorage.setItem('lms_videos_v4', JSON.stringify(newVideos));
                     resolve({ status: 'success' });
                 }
                 // Mock Import
                 else if (action === 'importTranscript') {
                     resolve({ status: 'success', data: [
                         { id: '1', time: 0, text: '[Mock] สวัสดีครับ ยินดีต้อนรับสู่บทเรียน' },
-                        { id: '2', time: 5, text: '[Mock] วันนี้เราจะมาเรียนเรื่อง React' },
-                        { id: '3', time: 10, text: '[Mock] ซึ่งเป็น Library ที่นิยมมาก' }
+                        { id: '2', time: 5, text: '[Mock] นี่คือตัวอย่างการถอดเสียง' },
                     ], lang: 'Th (Mock)'});
                 }
                 else resolve({ status: 'success' });
-            }, 800);
+            }, 500);
         });
     };
 
@@ -84,6 +90,29 @@
     };
 
     const AuthContext = createContext(null);
+
+    // --- HELPER: Parse Data Structure ---
+    // เพื่อรองรับข้อมูลเก่า (Single Video) และใหม่ (Multi-topic)
+    const parseLessonData = (videoData) => {
+        // ถ้า interactions เป็น Array และตัวแรกมี url แปลว่าเป็นโครงสร้างใหม่ (Playlist)
+        if (Array.isArray(videoData.interactions) && videoData.interactions.length > 0 && videoData.interactions[0].url) {
+            return {
+                isPlaylist: true,
+                topics: videoData.interactions // Load topics from interactions field
+            };
+        }
+        // ถ้าเป็นแบบเก่า (Single Video)
+        return {
+            isPlaylist: false,
+            topics: [{
+                id: videoData.id,
+                title: videoData.title,
+                url: videoData.url,
+                interactions: videoData.interactions || [],
+                transcripts: videoData.transcripts || []
+            }]
+        };
+    };
 
     // --- COMPONENTS ---
 
@@ -155,25 +184,33 @@
         );
     };
 
-    const InteractivePlayer = ({ video, allVideos, user, onBack, onChangeVideo }) => {
+    const InteractivePlayer = ({ lessonData, allLessons, user, onBack }) => {
         const playerRef = useRef(null);
         const transcriptRef = useRef(null);
         
+        // Playlist State
+        const [currentTopicIndex, setCurrentTopicIndex] = useState(0);
+        const currentTopic = lessonData.topics[currentTopicIndex];
+        
+        // Interaction State
         const [activeQ, setActiveQ] = useState(null);
         const [activeTranscriptId, setActiveTranscriptId] = useState(null);
         const [score, setScore] = useState(0);
         const [answeredIds, setAnsweredIds] = useState(new Set());
         
-        const transcripts = useMemo(() => (video.transcripts || []).sort((a,b) => a.time - b.time), [video]);
+        const transcripts = useMemo(() => (currentTopic.transcripts || []).sort((a,b) => a.time - b.time), [currentTopic]);
         
         const getYoutubeId = (url) => {
+            if(!url) return null;
             const m = url.match(/^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/);
             return (m && m[2].length === 11) ? m[2] : null;
         };
 
-        const currentVideoIndex = allVideos.findIndex(v => v.id === video.id);
-        const prevVideo = currentVideoIndex > 0 ? allVideos[currentVideoIndex - 1] : null;
-        const nextVideo = currentVideoIndex < allVideos.length - 1 ? allVideos[currentVideoIndex + 1] : null;
+        useEffect(() => {
+            // Reset state when topic changes
+            setAnsweredIds(new Set());
+            setActiveQ(null);
+        }, [currentTopicIndex]);
 
         useEffect(() => {
             const interval = setInterval(() => {
@@ -184,11 +221,11 @@
                 }
             }, 250);
             return () => clearInterval(interval);
-        }, [activeQ, answeredIds, video]);
+        }, [activeQ, answeredIds, currentTopic]);
 
         const checkInteractions = (t) => {
-            if (!video.interactions || user.role === 'teacher') return;
-            const q = video.interactions.find(i => Math.abs(i.time - t) < 0.8 && !answeredIds.has(i.id));
+            if (!currentTopic.interactions || user.role === 'teacher') return;
+            const q = currentTopic.interactions.find(i => Math.abs(i.time - t) < 0.8 && !answeredIds.has(i.id));
             if (q) {
                 playerRef.current.pauseVideo();
                 setActiveQ(q);
@@ -204,8 +241,6 @@
             }
             if (current && current.id !== activeTranscriptId) {
                 setActiveTranscriptId(current.id);
-                // Auto-scroll logic: find element by ID and scroll
-                // simplified for react ref interaction
             }
         };
 
@@ -221,31 +256,32 @@
             const newSet = new Set(answeredIds);
             newSet.add(activeQ.id);
             setAnsweredIds(newSet);
-            if (user.role === 'student') api.request('saveProgress', { studentId: user.username, videoId: video.id, score: isCorrect?score+1:score });
+            if (user.role === 'student') api.request('saveProgress', { studentId: user.username, videoId: currentTopic.id, score: isCorrect?score+1:score });
             setActiveQ(null);
             playerRef.current.playVideo();
         };
 
         return (
             <div className="max-w-6xl mx-auto fade-in pb-10">
+                {/* Header */}
                 <div className="bg-white border-b p-4 flex justify-between items-center mb-4 rounded-lg shadow-sm">
                     <button onClick={onBack} className="text-gray-500 hover:text-indigo-600 flex items-center gap-1 font-medium"><i data-lucide="arrow-left" className="w-4 h-4"></i> กลับ</button>
                     <div className="text-center">
-                        <div className="text-xs text-gray-400 uppercase tracking-wide">บทที่ {currentVideoIndex + 1}</div>
-                        <h2 className="font-bold text-lg truncate max-w-md">{video.title}</h2>
+                        <div className="text-xs text-gray-400 uppercase tracking-wide">บทเรียน</div>
+                        <h2 className="font-bold text-lg truncate max-w-md">{lessonData.title}</h2>
                     </div>
-                    <div className="flex gap-2">
-                        <button disabled={!prevVideo} onClick={()=>onChangeVideo(prevVideo)} className={`flex items-center gap-1 px-3 py-1 rounded border ${!prevVideo?'opacity-30':'hover:bg-gray-50'}`}><i data-lucide="chevron-left" className="w-4 h-4"></i> Prev</button>
-                        <button disabled={!nextVideo} onClick={()=>onChangeVideo(nextVideo)} className={`flex items-center gap-1 px-3 py-1 rounded border ${!nextVideo?'opacity-30':'hover:bg-gray-50'}`}>Next <i data-lucide="chevron-right" className="w-4 h-4"></i></button>
+                    <div className="text-right">
+                        <div className="text-xs text-gray-400">หัวข้อ {currentTopicIndex + 1} / {lessonData.topics.length}</div>
                     </div>
                 </div>
                 
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    {/* LEFT: PLAYER */}
                     <div className="lg:col-span-2 space-y-4">
                         <div className="bg-black rounded-xl overflow-hidden shadow-2xl relative select-none">
                             <div className="video-wrapper">
                                 <iframe id="yt-player"
-                                    src={`https://www.youtube.com/embed/${getYoutubeId(video.url)}?enablejsapi=1&controls=${user.role==='teacher'?1:0}&rel=0&modestbranding=1`}
+                                    src={`https://www.youtube.com/embed/${getYoutubeId(currentTopic.url)}?enablejsapi=1&controls=${user.role==='teacher'?1:0}&rel=0&modestbranding=1`}
                                     allowFullScreen
                                     onLoad={(e) => new YT.Player(e.target, { events: { 'onReady': (ev)=> { playerRef.current=ev.target; } } })}
                                 ></iframe>
@@ -257,25 +293,47 @@
                                 <div className="bg-indigo-100 text-indigo-700 p-2 rounded-full"><i data-lucide="trophy" className="w-5 h-5"></i></div>
                                 <div><div className="text-xs text-gray-500">คะแนนสะสม</div><div className="font-bold text-xl">{score}</div></div>
                             </div>
-                            <div className="text-right text-xs text-gray-400">{video.interactions?.length || 0} กิจกรรม</div>
+                            <div className="flex gap-2">
+                                <button disabled={currentTopicIndex===0} onClick={()=>setCurrentTopicIndex(prev=>prev-1)} className={`px-4 py-2 rounded border font-medium ${currentTopicIndex===0?'opacity-50':'hover:bg-slate-50'}`}>ก่อนหน้า</button>
+                                <button disabled={currentTopicIndex===lessonData.topics.length-1} onClick={()=>setCurrentTopicIndex(prev=>prev+1)} className={`px-4 py-2 rounded bg-indigo-600 text-white font-medium ${currentTopicIndex===lessonData.topics.length-1?'opacity-50':'hover:bg-indigo-700'}`}>ถัดไป</button>
+                            </div>
                         </div>
                     </div>
 
-                    <div className="lg:col-span-1 bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col h-[500px]">
-                        <div className="p-4 border-b bg-gray-50 rounded-t-xl"><h3 className="font-bold text-gray-700 flex items-center gap-2"><i data-lucide="file-text" className="w-4 h-4"></i> สารบัญเนื้อหา</h3></div>
-                        <div className="flex-grow overflow-y-auto custom-scroll p-2 space-y-1 relative" ref={transcriptRef}>
-                            {transcripts.length === 0 ? (
-                                <div className="text-center text-gray-400 mt-10 p-4"><p>ไม่มีข้อมูล Transcript</p></div>
-                            ) : (
-                                transcripts.map((t, i) => (
-                                    <div key={i} onClick={() => handleSeek(t.time)} className={`transcript-item p-3 rounded cursor-pointer transition text-sm hover:bg-slate-50 border-l-4 border-transparent ${activeTranscriptId === t.id ? 'active' : 'text-gray-600'}`}>
-                                        <div className="flex gap-2">
-                                            <span className="font-mono text-xs opacity-50 mt-0.5 min-w-[35px]">{Math.floor(t.time/60)}:{String(t.time%60).padStart(2,'0')}</span>
-                                            <p className="leading-relaxed">{t.text}</p>
+                    {/* RIGHT: PLAYLIST & TRANSCRIPT */}
+                    <div className="lg:col-span-1 space-y-4">
+                        {/* Playlist */}
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                            <div className="p-3 bg-slate-50 border-b font-bold text-gray-700 flex items-center gap-2"><i data-lucide="list" className="w-4 h-4"></i> เนื้อหาในบทเรียน</div>
+                            <div className="max-h-[200px] overflow-y-auto custom-scroll">
+                                {lessonData.topics.map((t, idx) => (
+                                    <button key={idx} onClick={()=>setCurrentTopicIndex(idx)} 
+                                        className={`w-full text-left p-3 text-sm flex gap-3 items-center border-b transition ${idx===currentTopicIndex ? 'bg-indigo-50 text-indigo-700 font-bold border-l-4 border-l-indigo-600' : 'hover:bg-slate-50 text-gray-600'}`}>
+                                        <span className="bg-white border rounded w-6 h-6 flex items-center justify-center text-xs shadow-sm">{idx+1}</span>
+                                        <span className="truncate flex-1">{t.title}</span>
+                                        {idx===currentTopicIndex && <i data-lucide="play-circle" className="w-4 h-4"></i>}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Transcript */}
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col h-[300px]">
+                            <div className="p-3 border-b bg-slate-50 rounded-t-xl font-bold text-gray-700 flex items-center gap-2"><i data-lucide="file-text" className="w-4 h-4"></i> สารบัญเนื้อหา</div>
+                            <div className="flex-grow overflow-y-auto custom-scroll p-2 space-y-1 relative" ref={transcriptRef}>
+                                {transcripts.length === 0 ? (
+                                    <div className="text-center text-gray-400 mt-10 p-4"><p>ไม่มีข้อมูล Transcript</p></div>
+                                ) : (
+                                    transcripts.map((t, i) => (
+                                        <div key={i} onClick={() => handleSeek(t.time)} className={`transcript-item p-3 rounded cursor-pointer transition text-sm hover:bg-slate-50 border-l-4 border-transparent ${activeTranscriptId === t.id ? 'active' : 'text-gray-600'}`}>
+                                            <div className="flex gap-2">
+                                                <span className="font-mono text-xs opacity-50 mt-0.5 min-w-[35px]">{Math.floor(t.time/60)}:{String(t.time%60).padStart(2,'0')}</span>
+                                                <p className="leading-relaxed">{t.text}</p>
+                                            </div>
                                         </div>
-                                    </div>
-                                ))
-                            )}
+                                    ))
+                                )}
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -283,150 +341,245 @@
         );
     };
 
-    const TeacherEditor = ({ user, onSave, editingVideo = null }) => {
-        const [form, setForm] = useState(editingVideo || { title: '', url: '', interactions: [], transcripts: [] });
+    const TeacherEditor = ({ user, onSave, editingLesson = null }) => {
+        // Form now holds "Lesson Title" and "Topics Array"
+        const [lessonTitle, setLessonTitle] = useState(editingLesson ? editingLesson.title : '');
+        const [topics, setTopics] = useState(editingLesson && editingLesson.isPlaylist ? editingLesson.topics : (editingLesson ? [editingLesson.topics[0]] : []));
+        
+        // Active Topic Editor
+        const [activeTopicIndex, setActiveTopicIndex] = useState(0);
+        const activeTopic = topics[activeTopicIndex] || { title: '', url: '', interactions: [], transcripts: [] };
+        
+        // Editor UI State
         const [activeTab, setActiveTab] = useState('info'); 
         const [isAddQ, setIsAddQ] = useState(false);
         const [qType, setQType] = useState('choice');
         const [newQ, setNewQ] = useState({ time: 0, question: '', options: [{text:'', isCorrect:true}, {text:'', isCorrect:false}] });
         const [newTrans, setNewTrans] = useState({ time: 0, text: '' });
         
-        // Importing State
-        const [isImporting, setIsImporting] = useState(false);
+        // Player Ref for Capturing Time
+        const editorPlayerRef = useRef(null);
+        const [currentTime, setCurrentTime] = useState(0);
 
+        // -- TOPIC MANAGEMENT --
+        const addTopic = () => {
+            const newTopic = { id: Date.now(), title: 'หัวข้อใหม่', url: '', interactions: [], transcripts: [] };
+            setTopics([...topics, newTopic]);
+            setActiveTopicIndex(topics.length); // Switch to new topic
+        };
+
+        const updateActiveTopic = (field, value) => {
+            const newTopics = [...topics];
+            newTopics[activeTopicIndex] = { ...newTopics[activeTopicIndex], [field]: value };
+            setTopics(newTopics);
+        };
+
+        const removeTopic = (index) => {
+            if (topics.length <= 1) return alert("ต้องมีอย่างน้อย 1 หัวข้อ");
+            const newTopics = topics.filter((_, i) => i !== index);
+            setTopics(newTopics);
+            setActiveTopicIndex(0);
+        };
+
+        // -- SAVE LOGIC --
         const handleSave = async () => {
-            if(!form.title || !form.url) return alert("กรุณากรอกชื่อและ URL");
-            await api.request('saveVideo', { ...form, user });
+            if (!lessonTitle) return alert("กรุณาใส่ชื่อบทเรียน");
+            if (topics.some(t => !t.url)) return alert("กรุณาใส่ URL ให้ครบทุกหัวข้อ");
+
+            // Construct payload compatible with backend
+            // Strategy: Store the whole topics array in 'interactions' field to avoid backend schema change
+            const payload = {
+                id: editingLesson ? editingLesson.id : null,
+                title: lessonTitle,
+                url: topics[0].url, // Representative URL
+                interactions: topics, // STORE TOPICS HERE!
+                transcripts: null, // Unused at root level
+                user
+            };
+
+            await api.request('saveVideo', payload);
             alert("บันทึกสำเร็จ!");
             onSave();
         };
 
-        const handleImportTranscript = async () => {
-            if (!form.url) return alert("กรุณาใส่ URL วิดีโอก่อน");
-            setIsImporting(true);
-            const res = await api.request('importTranscript', { url: form.url });
-            setIsImporting(false);
-
-            if (res.status === 'success') {
-                if (confirm(`พบ ${res.data.length} บรรทัด (ภาษา: ${res.lang}) ต้องการนำเข้าหรือไม่? \n(ข้อมูลเดิมจะถูกแทนที่)`)) {
-                    setForm({ ...form, transcripts: res.data });
-                }
-            } else {
-                alert("ไม่สามารถดึงข้อมูลได้: " + res.message);
+        // -- PLAYER CAPTURE TIME --
+        const captureTime = () => {
+            if (editorPlayerRef.current && editorPlayerRef.current.getCurrentTime) {
+                const t = Math.floor(editorPlayerRef.current.getCurrentTime());
+                setNewQ({ ...newQ, time: t });
             }
         };
 
+        const getYoutubeId = (url) => {
+            if(!url) return null;
+            const m = url.match(/^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/);
+            return (m && m[2].length === 11) ? m[2] : null;
+        };
+
+        // -- SUB-EDITOR FUNCTIONS --
         const addInteraction = () => {
             const item = { ...newQ, id: Date.now(), type: qType };
-            setForm({...form, interactions: [...(form.interactions||[]), item].sort((a,b)=>a.time-b.time)});
+            const newInteractions = [...(activeTopic.interactions||[]), item].sort((a,b)=>a.time-b.time);
+            updateActiveTopic('interactions', newInteractions);
             setIsAddQ(false);
             setNewQ({ time: 0, question: '', options: [{text:'', isCorrect:true}], answerKey: '' });
         };
-
+        
         const addTranscript = () => {
             if(!newTrans.text) return;
             const item = { ...newTrans, id: Date.now() + 't' };
-            setForm({...form, transcripts: [...(form.transcripts||[]), item].sort((a,b)=>a.time-b.time)});
+            const newTranscripts = [...(activeTopic.transcripts||[]), item].sort((a,b)=>a.time-b.time);
+            updateActiveTopic('transcripts', newTranscripts);
             setNewTrans({ ...newTrans, text: '', time: newTrans.time + 10 });
         };
 
         return (
-            <div className="bg-white rounded-lg shadow-lg max-w-5xl mx-auto fade-in overflow-hidden flex flex-col md:flex-row min-h-[600px]">
-                <div className="w-full md:w-64 bg-slate-50 border-r p-4">
-                    <h2 className="text-xl font-bold text-indigo-800 mb-6 flex items-center gap-2"><i data-lucide="edit-3" className="w-5 h-5"></i> Editor</h2>
-                    <div className="space-y-2">
-                        {['info','interactions','transcript'].map(t => (
-                            <button key={t} onClick={()=>setActiveTab(t)} className={`w-full text-left p-3 rounded flex items-center gap-2 capitalize ${activeTab===t?'bg-indigo-100 text-indigo-700 font-bold':'text-gray-600 hover:bg-gray-100'}`}>
-                                <i data-lucide={t==='info'?'info':t==='interactions'?'activity':'file-text'} className="w-4 h-4"></i> {t}
-                            </button>
-                        ))}
+            <div className="bg-white rounded-lg shadow-lg max-w-6xl mx-auto fade-in flex flex-col h-[90vh]">
+                {/* Header */}
+                <div className="p-4 border-b flex justify-between items-center bg-slate-50 rounded-t-lg">
+                    <div className="flex items-center gap-2 w-1/2">
+                        <i data-lucide="book-open" className="text-indigo-600"></i>
+                        <input className="w-full bg-transparent font-bold text-xl border-b border-dashed border-gray-400 focus:border-indigo-600 outline-none" 
+                            value={lessonTitle} onChange={e=>setLessonTitle(e.target.value)} placeholder="ชื่อบทเรียนหลัก (เช่น บทที่ 1)" />
                     </div>
-                    <div className="mt-8 border-t pt-4">
-                        <button onClick={handleSave} className="w-full bg-green-600 text-white p-3 rounded-lg font-bold hover:bg-green-700 flex justify-center items-center gap-2"><i data-lucide="save" className="w-4 h-4"></i> บันทึกทั้งหมด</button>
-                        <button onClick={onSave} className="w-full mt-2 text-gray-500 p-2 text-sm hover:text-gray-800">ยกเลิก / ปิด</button>
+                    <div className="flex gap-2">
+                        <button onClick={onSave} className="text-gray-500 hover:text-gray-800 px-4">ยกเลิก</button>
+                        <button onClick={handleSave} className="bg-green-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-green-700 shadow flex items-center gap-2">
+                            <i data-lucide="save" className="w-4 h-4"></i> บันทึกบทเรียน
+                        </button>
                     </div>
                 </div>
 
-                <div className="flex-1 p-6 overflow-y-auto max-h-[80vh]">
-                    {activeTab === 'info' && (
-                        <div className="space-y-4 max-w-lg">
-                            <h3 className="font-bold text-lg border-b pb-2">ข้อมูลบทเรียน</h3>
-                            <div><label className="block text-sm font-bold text-gray-700 mb-1">ชื่อบทเรียน</label><input className="w-full p-3 border rounded" value={form.title} onChange={e=>setForm({...form, title:e.target.value})} placeholder="เช่น บทที่ 1..." /></div>
-                            <div><label className="block text-sm font-bold text-gray-700 mb-1">YouTube URL</label><input className="w-full p-3 border rounded" value={form.url} onChange={e=>setForm({...form, url:e.target.value})} placeholder="https://youtu.be/..." /></div>
-                            {form.url && <div className="mt-4 rounded overflow-hidden aspect-video bg-black"><img src={`https://img.youtube.com/vi/${form.url.split('v=')[1]?.split('&')[0] || ''}/mqdefault.jpg`} className="w-full h-full object-cover opacity-80" /></div>}
+                <div className="flex flex-1 overflow-hidden">
+                    {/* LEFT SIDEBAR: TOPICS LIST */}
+                    <div className="w-64 bg-slate-50 border-r flex flex-col">
+                        <div className="p-3 font-bold text-gray-500 text-xs uppercase tracking-wider">หัวข้อย่อย (Clips)</div>
+                        <div className="flex-1 overflow-y-auto">
+                            {topics.map((t, idx) => (
+                                <div key={idx} onClick={()=>setActiveTopicIndex(idx)} 
+                                    className={`p-3 border-b cursor-pointer group relative ${idx===activeTopicIndex ? 'bg-white border-l-4 border-l-indigo-600 shadow-sm' : 'hover:bg-slate-100 text-gray-500'}`}>
+                                    <div className="text-xs font-bold mb-1">หัวข้อที่ {idx+1}</div>
+                                    <div className="text-sm truncate font-medium">{t.title || 'ไม่มีชื่อ'}</div>
+                                    <button onClick={(e)=>{e.stopPropagation(); removeTopic(idx);}} className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600"><i data-lucide="trash-2" className="w-4 h-4"></i></button>
+                                </div>
+                            ))}
                         </div>
-                    )}
+                        <button onClick={addTopic} className="p-4 border-t text-indigo-600 font-bold text-sm hover:bg-indigo-50 flex items-center justify-center gap-2">
+                            <i data-lucide="plus-circle" className="w-4 h-4"></i> เพิ่มคลิป
+                        </button>
+                    </div>
 
-                    {activeTab === 'interactions' && (
-                        <div>
-                            <div className="flex justify-between items-center mb-4">
-                                <h3 className="font-bold text-lg">จุดหยุดถามคำถาม ({form.interactions?.length || 0})</h3>
-                                <button onClick={()=>setIsAddQ(true)} className="bg-indigo-600 text-white px-3 py-1.5 rounded text-sm hover:bg-indigo-700">+ เพิ่มคำถาม</button>
+                    {/* RIGHT MAIN: ACTIVE TOPIC EDITOR */}
+                    <div className="flex-1 flex flex-col overflow-hidden">
+                        {/* Topic Settings Bar */}
+                        <div className="p-4 border-b bg-white grid grid-cols-2 gap-4">
+                            <div>
+                                <label className="text-xs font-bold text-gray-500 block mb-1">ชื่อคลิปย่อย</label>
+                                <input className="w-full border p-2 rounded text-sm" value={activeTopic.title} onChange={e=>updateActiveTopic('title', e.target.value)} placeholder="เช่น Intro..." />
                             </div>
-                            <div className="space-y-2">
-                                {(form.interactions||[]).map((q,i) => (
-                                    <div key={i} className="flex items-center bg-slate-50 p-3 rounded border justify-between">
-                                        <div className="flex items-center gap-3">
-                                            <span className="bg-gray-200 text-gray-700 font-mono text-xs px-2 py-1 rounded">{Math.floor(q.time/60)}:{String(q.time%60).padStart(2,'0')}</span>
-                                            <div><span className={`text-[10px] px-1.5 py-0.5 rounded text-white mr-2 ${q.type==='note'?'bg-yellow-500':q.type==='text'?'bg-blue-500':'bg-green-500'}`}>{q.type}</span><span className="text-sm font-medium">{q.question}</span></div>
+                            <div>
+                                <label className="text-xs font-bold text-gray-500 block mb-1">YouTube URL</label>
+                                <input className="w-full border p-2 rounded text-sm" value={activeTopic.url} onChange={e=>updateActiveTopic('url', e.target.value)} placeholder="https://youtu.be/..." />
+                            </div>
+                        </div>
+
+                        {/* Editor Content */}
+                        <div className="flex-1 flex overflow-hidden">
+                            {/* Video Preview & Player */}
+                            <div className="w-2/3 bg-black relative flex flex-col justify-center">
+                                {activeTopic.url ? (
+                                    <div className="video-wrapper">
+                                        <iframe id="editor-player"
+                                            src={`https://www.youtube.com/embed/${getYoutubeId(activeTopic.url)}?enablejsapi=1&rel=0`}
+                                            allowFullScreen
+                                            onLoad={(e) => new YT.Player(e.target, { events: { 'onReady': (ev)=> { editorPlayerRef.current=ev.target; } } })}
+                                        ></iframe>
+                                    </div>
+                                ) : (
+                                    <div className="text-gray-500 text-center">กรุณาใส่ URL วิดีโอก่อน</div>
+                                )}
+                            </div>
+
+                            {/* Interaction Tools Panel */}
+                            <div className="w-1/3 bg-white border-l flex flex-col">
+                                <div className="flex border-b">
+                                    <button onClick={()=>setActiveTab('info')} className={`flex-1 p-3 text-sm font-bold ${activeTab==='info'?'text-indigo-600 border-b-2 border-indigo-600':'text-gray-500'}`}>คำถาม ({activeTopic.interactions?.length})</button>
+                                    <button onClick={()=>setActiveTab('transcript')} className={`flex-1 p-3 text-sm font-bold ${activeTab==='transcript'?'text-indigo-600 border-b-2 border-indigo-600':'text-gray-500'}`}>สารบัญ ({activeTopic.transcripts?.length})</button>
+                                </div>
+
+                                <div className="flex-1 overflow-y-auto p-4 custom-scroll">
+                                    {activeTab === 'info' && (
+                                        <div className="space-y-3">
+                                            <button onClick={()=>{captureTime(); setIsAddQ(true);}} className="w-full py-3 bg-indigo-600 text-white rounded shadow hover:bg-indigo-700 font-bold flex flex-col items-center gap-1">
+                                                <i data-lucide="plus-circle"></i>
+                                                <span className="text-xs">หยุดวิดีโอ & เพิ่มคำถามตรงนี้</span>
+                                            </button>
+                                            
+                                            <div className="space-y-2 mt-4">
+                                                {(activeTopic.interactions||[]).map((q,i) => (
+                                                    <div key={i} className="bg-slate-50 p-3 rounded border text-sm relative group">
+                                                        <div className="font-mono font-bold text-indigo-600 text-xs mb-1">{Math.floor(q.time/60)}:{String(q.time%60).padStart(2,'0')} - {q.type}</div>
+                                                        <div className="truncate text-gray-700">{q.question}</div>
+                                                        <button onClick={()=>updateActiveTopic('interactions', activeTopic.interactions.filter((_,x)=>x!==i))} className="absolute top-2 right-2 text-red-400 opacity-0 group-hover:opacity-100"><i data-lucide="trash-2" className="w-4 h-4"></i></button>
+                                                    </div>
+                                                ))}
+                                            </div>
                                         </div>
-                                        <button onClick={()=>{setForm({...form, interactions: form.interactions.filter((_,idx)=>idx!==i)});}} className="text-red-500 hover:bg-red-50 p-1 rounded"><i data-lucide="trash-2" className="w-4 h-4"></i></button>
-                                    </div>
-                                ))}
+                                    )}
+                                    {activeTab === 'transcript' && (
+                                        <div className="space-y-3">
+                                            <div className="flex gap-2 items-end">
+                                                <div className="w-16"><input type="number" className="w-full border p-1 rounded text-xs" value={newTrans.time} onChange={e=>setNewTrans({...newTrans, time:Number(e.target.value)})} placeholder="วิ" /></div>
+                                                <div className="flex-1"><input className="w-full border p-1 rounded text-xs" value={newTrans.text} onChange={e=>setNewTrans({...newTrans, text:e.target.value})} placeholder="ข้อความ" /></div>
+                                                <button onClick={addTranscript} className="bg-blue-600 text-white px-2 py-1 rounded text-xs">OK</button>
+                                            </div>
+                                            <div className="space-y-1 mt-2">
+                                                {(activeTopic.transcripts||[]).map((t, i) => (
+                                                    <div key={i} className="flex gap-2 text-xs p-2 bg-slate-50 rounded group">
+                                                        <span className="font-mono text-indigo-600 font-bold">{Math.floor(t.time/60)}:{String(t.time%60).padStart(2,'0')}</span>
+                                                        <span className="flex-1 truncate">{t.text}</span>
+                                                        <button onClick={()=>updateActiveTopic('transcripts', activeTopic.transcripts.filter((_,x)=>x!==i))} className="text-red-400 opacity-0 group-hover:opacity-100">x</button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         </div>
-                    )}
-
-                    {activeTab === 'transcript' && (
-                        <div>
-                             <div className="flex justify-between items-center mb-4 border-b pb-2">
-                                <div><h3 className="font-bold text-lg">สารบัญ / คำบรรยาย ({form.transcripts?.length || 0})</h3><p className="text-xs text-gray-500">ข้อความจะไฮไลท์เมื่อวิดีโอเล่นถึงเวลาที่กำหนด</p></div>
-                                <button 
-                                    onClick={handleImportTranscript} 
-                                    disabled={isImporting || !form.url}
-                                    className={`flex items-center gap-2 px-3 py-1.5 rounded text-sm font-bold shadow transition ${isImporting ? 'bg-gray-300 cursor-wait' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
-                                >
-                                    {isImporting ? <span className="animate-spin">⏳</span> : <i data-lucide="download-cloud" className="w-4 h-4"></i>}
-                                    {isImporting ? 'กำลังดึง...' : 'ดึงจาก YouTube (Auto)'}
-                                </button>
-                            </div>
-                            
-                            <div className="flex gap-2 mb-6 items-end bg-slate-50 p-4 rounded border">
-                                <div className="w-24"><label className="text-xs font-bold text-gray-500">เวลา (วินาที)</label><input type="number" className="w-full border p-2 rounded text-sm" value={newTrans.time} onChange={e=>setNewTrans({...newTrans, time:Number(e.target.value)})} /></div>
-                                <div className="flex-1"><label className="text-xs font-bold text-gray-500">ข้อความบรรยาย</label><input className="w-full border p-2 rounded text-sm" value={newTrans.text} onChange={e=>setNewTrans({...newTrans, text:e.target.value})} placeholder="เช่น 'เข้าสู่เนื้อหาไฟฟ้ากระแสตรง'..." onKeyDown={e => e.key === 'Enter' && addTranscript()} /></div>
-                                <button onClick={addTranscript} className="bg-indigo-600 text-white px-4 py-2 rounded text-sm hover:bg-indigo-700 h-[38px]">เพิ่ม</button>
-                            </div>
-
-                            <div className="space-y-1">
-                                {(form.transcripts||[]).map((t, i) => (
-                                    <div key={i} className="flex gap-3 text-sm p-2 hover:bg-slate-50 rounded border-b border-transparent hover:border-slate-200 group">
-                                        <span className="font-mono text-indigo-600 font-bold min-w-[40px] text-right">{Math.floor(t.time/60)}:{String(t.time%60).padStart(2,'0')}</span>
-                                        <p className="flex-1 text-gray-700">{t.text}</p>
-                                        <button onClick={()=>{setForm({...form, transcripts: form.transcripts.filter((_,idx)=>idx!==i)});}} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100"><i data-lucide="x" className="w-4 h-4"></i></button>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
+                    </div>
                 </div>
 
                 {/* MODAL: ADD QUESTION */}
                 {isAddQ && (
-                    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] backdrop-blur-sm">
-                        <div className="bg-white p-6 rounded-lg w-full max-w-md shadow-xl">
-                            <h4 className="font-bold mb-4">เพิ่มคำถาม</h4>
-                            <div className="flex gap-2 mb-4">
-                                {['choice','text','note'].map(type => (<button key={type} onClick={()=>setQType(type)} className={`flex-1 py-1 text-sm border rounded ${qType===type?'bg-indigo-600 text-white':'bg-gray-50'}`}>{type}</button>))}
+                    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] backdrop-blur-sm">
+                        <div className="bg-white p-6 rounded-lg w-full max-w-md shadow-xl animate-bounce-in">
+                            <h4 className="font-bold mb-4 flex items-center gap-2"><i data-lucide="help-circle" className="text-indigo-600"></i> เพิ่มคำถาม</h4>
+                            <div className="flex gap-2 mb-4 bg-slate-100 p-1 rounded">
+                                {['choice','text','note'].map(type => (<button key={type} onClick={()=>setQType(type)} className={`flex-1 py-1.5 text-xs font-bold rounded ${qType===type?'bg-white shadow text-indigo-600':'text-gray-500'}`}>{type.toUpperCase()}</button>))}
                             </div>
-                            <input type="number" className="w-full border p-2 mb-2 rounded" placeholder="วินาทีที่ (เช่น 60)" value={newQ.time} onChange={e=>setNewQ({...newQ, time:Number(e.target.value)})} />
-                            <textarea className="w-full border p-2 mb-4 rounded" placeholder="คำถาม..." value={newQ.question} onChange={e=>setNewQ({...newQ, question:e.target.value})} />
+                            
+                            <div className="flex items-center gap-2 mb-4 bg-indigo-50 p-2 rounded text-indigo-800 border border-indigo-100">
+                                <i data-lucide="clock" className="w-4 h-4"></i>
+                                <span className="text-sm font-bold">เวลา: {Math.floor(newQ.time/60)}:{String(newQ.time%60).padStart(2,'0')} ({newQ.time} วินาที)</span>
+                                <button onClick={captureTime} className="ml-auto text-xs bg-white px-2 py-1 rounded border shadow-sm hover:bg-slate-50">Refresh Time</button>
+                            </div>
+
+                            <textarea className="w-full border p-3 mb-4 rounded focus:ring-2 focus:ring-indigo-500 outline-none text-sm" placeholder="พิมพ์คำถามที่นี่..." value={newQ.question} onChange={e=>setNewQ({...newQ, question:e.target.value})} rows={3} />
+                            
                             {qType==='choice' && newQ.options.map((opt, i) => (
-                                <div key={i} className="flex gap-2 mb-2">
-                                    <input type="radio" checked={opt.isCorrect} onChange={()=>setNewQ({...newQ, options:newQ.options.map((o,idx)=>({...o, isCorrect:idx===i}))})} />
-                                    <input className="border p-1 flex-1 text-sm" value={opt.text} onChange={e=>{const opts=[...newQ.options]; opts[i].text=e.target.value; setNewQ({...newQ, options:opts});}} placeholder={`ตัวเลือก ${i+1}`} />
+                                <div key={i} className="flex gap-2 mb-2 items-center">
+                                    <input type="radio" checked={opt.isCorrect} onChange={()=>setNewQ({...newQ, options:newQ.options.map((o,idx)=>({...o, isCorrect:idx===i}))})} className="accent-indigo-600 w-4 h-4" />
+                                    <input className="border p-2 flex-1 text-sm rounded focus:border-indigo-500 outline-none" value={opt.text} onChange={e=>{const opts=[...newQ.options]; opts[i].text=e.target.value; setNewQ({...newQ, options:opts});}} placeholder={`ตัวเลือก ${i+1}`} />
+                                    {i>1 && <button onClick={()=>setNewQ({...newQ, options:newQ.options.filter((_,idx)=>idx!==i)})} className="text-red-400"><i data-lucide="x" className="w-4 h-4"></i></button>}
                                 </div>
                             ))}
-                            <div className="flex justify-end gap-2 mt-4"><button onClick={()=>setIsAddQ(false)} className="px-3 py-1 text-gray-500">ยกเลิก</button><button onClick={addInteraction} className="px-3 py-1 bg-green-600 text-white rounded">บันทึก</button></div>
+                            {qType==='choice' && <button onClick={()=>setNewQ({...newQ, options:[...newQ.options, {text:'', isCorrect:false}]})} className="text-xs text-indigo-600 font-bold hover:underline mb-4">+ เพิ่มตัวเลือก</button>}
+
+                            <div className="flex justify-end gap-2 mt-4 pt-4 border-t">
+                                <button onClick={()=>setIsAddQ(false)} className="px-4 py-2 text-gray-500 font-medium hover:bg-slate-50 rounded">ยกเลิก</button>
+                                <button onClick={addInteraction} className="px-6 py-2 bg-indigo-600 text-white rounded font-bold shadow hover:bg-indigo-700">บันทึก</button>
+                            </div>
                         </div>
                     </div>
                 )}
@@ -437,37 +590,50 @@
     const App = () => {
         const [user, setUser] = useState(null);
         const [view, setView] = useState('home'); 
-        const [selectedVideo, setSelectedVideo] = useState(null);
-        const [videos, setVideos] = useState([]);
+        const [selectedLesson, setSelectedLesson] = useState(null); // Changed from Video to Lesson
+        const [lessons, setLessons] = useState([]);
 
-        useEffect(() => { const u = localStorage.getItem('lms_user_v3'); if(u) setUser(JSON.parse(u)); lucide.createIcons(); }, []);
-        useEffect(() => { if(user) loadVideos(); }, [user, view]);
+        useEffect(() => { const u = localStorage.getItem('lms_user_v4'); if(u) setUser(JSON.parse(u)); lucide.createIcons(); }, []);
+        useEffect(() => { if(user) loadLessons(); }, [user, view]);
         useEffect(() => { lucide.createIcons(); });
 
-        const loadVideos = async () => { const res = await api.request('getVideos'); if (res.status === 'success') setVideos(res.data); };
+        const loadLessons = async () => { 
+            const res = await api.request('getVideos'); 
+            if (res.status === 'success') {
+                // Parse Data Structure
+                const parsedLessons = res.data.map(d => ({ ...d, ...parseLessonData(d) }));
+                setLessons(parsedLessons);
+            }
+        };
 
-        if (!user) return (<AuthContext.Provider value={{ login: (u) => { setUser(u); localStorage.setItem('lms_user_v3', JSON.stringify(u)); } }}><Login /></AuthContext.Provider>);
+        if (!user) return (<AuthContext.Provider value={{ login: (u) => { setUser(u); localStorage.setItem('lms_user_v4', JSON.stringify(u)); } }}><Login /></AuthContext.Provider>);
 
         return (
             <div className="min-h-screen flex flex-col bg-slate-100">
                 <nav className="bg-white border-b px-6 py-3 sticky top-0 z-40 flex justify-between items-center shadow-sm">
                     <div className="flex items-center gap-3 cursor-pointer" onClick={()=>setView('home')}><div className="bg-indigo-600 text-white p-1.5 rounded-lg"><i data-lucide="graduation-cap" className="w-5 h-5"></i></div><div><h1 className="font-bold text-lg leading-none">Smart LMS</h1><span className="text-xs text-gray-500">{user.name}</span></div></div>
-                    <div className="flex gap-4"><button onClick={()=>setView('home')} className={`text-sm ${view==='home'?'text-indigo-600 font-bold':'text-gray-500'}`}>บทเรียน</button>{user.role!=='student' && <button onClick={()=>setView('editor')} className={`text-sm ${view==='editor'?'text-indigo-600 font-bold':'text-gray-500'}`}>จัดการ</button>}<button onClick={()=>{setUser(null); localStorage.removeItem('lms_user_v3');}} className="text-red-500"><i data-lucide="log-out" className="w-4 h-4"></i></button></div>
+                    <div className="flex gap-4"><button onClick={()=>setView('home')} className={`text-sm ${view==='home'?'text-indigo-600 font-bold':'text-gray-500'}`}>บทเรียน</button>{user.role!=='student' && <button onClick={()=>setView('editor')} className={`text-sm ${view==='editor'?'text-indigo-600 font-bold':'text-gray-500'}`}>จัดการ</button>}<button onClick={()=>{setUser(null); localStorage.removeItem('lms_user_v4');}} className="text-red-500"><i data-lucide="log-out" className="w-4 h-4"></i></button></div>
                 </nav>
                 <main className="flex-grow container mx-auto p-6">
                     {view === 'home' && (
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                            {videos.map(v => (
-                                <div key={v.id} className="bg-white rounded-xl shadow-sm hover:shadow-lg transition cursor-pointer overflow-hidden group" onClick={()=>{setSelectedVideo(v); setView('player');}}>
-                                    <div className="relative aspect-video bg-gray-200"><img src={`https://img.youtube.com/vi/${v.url.split('v=')[1]?.split('&')[0] || ''}/mqdefault.jpg`} className="w-full h-full object-cover" /><div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition"><span className="bg-white text-indigo-700 px-4 py-1 rounded-full font-bold text-sm">Play</span></div><div className="absolute bottom-2 right-2 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded flex gap-2"><span><i data-lucide="help-circle" className="w-3 h-3 inline"></i> {v.interactions?.length||0}</span><span><i data-lucide="file-text" className="w-3 h-3 inline"></i> {v.transcripts?.length||0}</span></div></div>
-                                    <div className="p-3"><h3 className="font-bold text-gray-800 truncate">{v.title}</h3><p className="text-xs text-gray-500 mt-1">โดย {v.created_by || 'Admin'}</p></div>
+                            {lessons.map(l => (
+                                <div key={l.id} className="bg-white rounded-xl shadow-sm hover:shadow-lg transition cursor-pointer overflow-hidden group border border-slate-100" onClick={()=>{setSelectedLesson(l); setView('player');}}>
+                                    <div className="relative aspect-video bg-gray-200">
+                                        <img src={`https://img.youtube.com/vi/${(l.topics[0]?.url || '').split('v=')[1]?.split('&')[0] || ''}/mqdefault.jpg`} className="w-full h-full object-cover" />
+                                        <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition"><span className="bg-white text-indigo-700 px-4 py-1 rounded-full font-bold text-sm">เข้าเรียน</span></div>
+                                        <div className="absolute bottom-2 right-2 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded flex gap-2">
+                                            <span><i data-lucide="list" className="w-3 h-3 inline"></i> {l.topics.length} คลิป</span>
+                                        </div>
+                                    </div>
+                                    <div className="p-3"><h3 className="font-bold text-gray-800 truncate">{l.title}</h3><p className="text-xs text-gray-500 mt-1">โดย {l.created_by || 'Admin'}</p></div>
                                 </div>
                             ))}
-                            {user.role!=='student' && (<div onClick={()=>setView('editor')} className="border-2 border-dashed border-gray-300 rounded-xl flex flex-col items-center justify-center text-gray-400 hover:border-indigo-400 hover:text-indigo-500 cursor-pointer min-h-[200px]"><i data-lucide="plus-circle" className="w-8 h-8 mb-2"></i><span>สร้างบทเรียนใหม่</span></div>)}
+                            {user.role!=='student' && (<div onClick={()=>{setSelectedLesson(null); setView('editor');}} className="border-2 border-dashed border-gray-300 rounded-xl flex flex-col items-center justify-center text-gray-400 hover:border-indigo-400 hover:text-indigo-500 cursor-pointer min-h-[200px] bg-slate-50 hover:bg-white transition"><i data-lucide="plus-circle" className="w-10 h-10 mb-2"></i><span className="font-bold">สร้างบทเรียนใหม่</span></div>)}
                         </div>
                     )}
-                    {view === 'player' && selectedVideo && (<InteractivePlayer video={selectedVideo} allVideos={videos} user={user} onBack={()=>setView('home')} onChangeVideo={(v) => setSelectedVideo(v)} />)}
-                    {view === 'editor' && (<TeacherEditor user={user} onSave={()=>{loadVideos(); setView('home');}} />)}
+                    {view === 'player' && selectedLesson && (<InteractivePlayer lessonData={selectedLesson} allLessons={lessons} user={user} onBack={()=>setView('home')} />)}
+                    {view === 'editor' && (<TeacherEditor user={user} editingLesson={selectedLesson} onSave={()=>{loadLessons(); setView('home');}} />)}
                 </main>
             </div>
         );
