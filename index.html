@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interactive Video LMS (Robust Analytics)</title>
+    <title>Interactive Video LMS (Debug & Analytics)</title>
     
     <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
@@ -31,7 +31,7 @@
     const { useState, useEffect, useRef, createContext, useContext } = React;
 
     // ==========================================
-    // ⚙️ CONFIG
+    // ⚙️ CONFIG: ใส่ URL ของคุณที่นี่
     // ==========================================
     const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx7c1dJ7WS3YZLtd5Kl9ftO9k_EhHJFPF3FxkVU1eUIkt8pDtPEAythuFmFs3pL2lhEag/exec"; 
 
@@ -92,7 +92,7 @@
                 const response = await fetch(`${GOOGLE_SCRIPT_URL}?action=${action}`, { method: "POST", body: JSON.stringify(data) });
                 return await response.json();
             } catch (e) {
-                return { status: "error", message: "Connection Error" };
+                return { status: "error", message: "Connection Error: " + e.message };
             }
         }
     };
@@ -187,36 +187,47 @@
         );
     };
 
-    // --- ANALYTICS PANEL (ROBUST FIX) ---
+    // --- ANALYTICS PANEL (FIXED & DEBUGGING) ---
     const AnalyticsPanel = ({ user }) => {
         const [logs, setLogs] = useState([]);
         const [loading, setLoading] = useState(true);
-        const [debugMsg, setDebugMsg] = useState('');
+        const [statusMsg, setStatusMsg] = useState('');
 
         useEffect(() => {
             const fetchData = async () => {
                 try {
-                    // Fetch logs and videos in parallel
+                    // Check Mock Mode
+                    if (!GOOGLE_SCRIPT_URL) {
+                        setStatusMsg("⚠️ Warning: คุณยังไม่ได้ใส่ URL ระบบจึงใช้ Mock Data (LocalStorage) ซึ่งจะไม่เห็นข้อมูลใน Google Sheets");
+                    }
+
                     const [resLogs, resVideos] = await Promise.all([
                         api.request('getAnalytics', { user }),
                         api.request('getVideos')
                     ]);
                     
-                    // Defensive Checks: Ensure data is array
-                    const logsData = (resLogs && Array.isArray(resLogs.data)) ? resLogs.data : [];
-                    const videosData = (resVideos && Array.isArray(resVideos.data)) ? resVideos.data : [];
+                    // Debug Response
+                    console.log("Analytics Response:", resLogs);
 
-                    // Debug info (optional viewing in console)
-                    console.log(`Analytics Loaded: ${logsData.length} logs, ${videosData.length} videos`);
+                    if (resLogs.status !== 'success') {
+                        throw new Error(resLogs.message || "Failed to fetch logs");
+                    }
 
-                    // Step 1: Identify My Videos
-                    // If Admin: See all. If Teacher: See only created_by = username.
-                    // Fallback: If video has NO created_by field (old data), treat as visible for now or check logic.
+                    // Check if data is missing (Old backend version issue)
+                    if (!Array.isArray(resLogs.data)) {
+                        setStatusMsg("❌ Error: เชื่อมต่อได้ แต่ไม่ได้รับข้อมูลกลับมา (กรุณาไปที่ Apps Script > Deploy > New version อีกครั้ง)");
+                        setLoading(false);
+                        return;
+                    }
+
+                    const logsData = resLogs.data || [];
+                    const videosData = (resVideos.data && Array.isArray(resVideos.data)) ? resVideos.data : [];
+
+                    // Filter Videos based on ownership
                     const userVideos = (user.role === 'admin') 
                         ? videosData 
                         : videosData.filter(v => !v.created_by || v.created_by === user.username || v.created_by === 'unknown');
                     
-                    // Step 2: Extract all relevant Topic IDs (sub-clips)
                     const validVideoIds = new Set();
                     userVideos.forEach(v => {
                         const parsed = parseLessonData(v);
@@ -225,9 +236,7 @@
                         }
                     });
 
-                    // Step 3: Filter logs matching these IDs
                     const filteredLogs = logsData.filter(l => l && validVideoIds.has(String(l.videoId))).map(l => {
-                        // Find Video Title for display
                         let title = 'Unknown Video';
                         for (const v of userVideos) {
                             const parsed = parseLessonData(v);
@@ -242,14 +251,13 @@
 
                     setLogs(filteredLogs.reverse());
                     
-                    // Set debug message if raw data exists but filtered is empty
                     if (logsData.length > 0 && filteredLogs.length === 0) {
-                        setDebugMsg(`พบข้อมูลดิบ ${logsData.length} รายการ แต่ไม่ตรงกับวิดีโอของคุณ (อาจเป็นวิดีโอของคนอื่น หรือ ID ไม่ตรงกัน)`);
+                        setStatusMsg(`พบข้อมูลดิบ ${logsData.length} รายการ แต่ไม่ตรงกับวิดีโอของคุณ (อาจเป็นข้อมูลเก่า หรือของคนอื่น)`);
                     }
 
                 } catch (e) {
                     console.error("Analytics Error:", e);
-                    setDebugMsg("เกิดข้อผิดพลาดในการดึงข้อมูล: " + e.message);
+                    setStatusMsg("เกิดข้อผิดพลาด: " + e.message);
                 } finally {
                     setLoading(false);
                 }
@@ -262,7 +270,7 @@
                 <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><i data-lucide="bar-chart-2"></i> รายงานผลการเรียน (Analytics)</h2>
                 {user.role === 'teacher' && <p className="text-sm text-gray-500 mb-4">* แสดงเฉพาะผลการเรียนของวิดีโอที่คุณสร้าง</p>}
                 
-                {debugMsg && <div className="bg-yellow-50 text-yellow-800 p-3 rounded mb-4 text-sm border border-yellow-200">{debugMsg}</div>}
+                {statusMsg && <div className="bg-yellow-50 text-yellow-800 p-4 rounded mb-6 text-sm border-l-4 border-yellow-400 shadow-sm">{statusMsg}</div>}
 
                 <div className="bg-white rounded-lg shadow overflow-hidden">
                     {loading ? <div className="p-8 text-center">Loading data...</div> : logs.length === 0 ? <div className="p-8 text-center text-gray-500">ยังไม่มีข้อมูลการเข้าเรียนสำหรับวิดีโอของคุณ</div> : (
