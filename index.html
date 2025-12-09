@@ -229,7 +229,6 @@
     // --- PLAYER & QUESTION CARD ---
     const QuestionCard = ({ question, onAnswer }) => {
         const [textAnswer, setTextAnswer] = useState('');
-        // (Code same as previous version, omitted for brevity but fully functional in logic)
         return (
             <div className="bg-white p-6 rounded-lg max-w-md w-full text-center shadow-2xl bounce-in border-t-4 border-indigo-500">
                 <h3 className="text-xl font-bold mb-4 text-indigo-800">{question.type==='note'?'💡 ช่วยจำ':'❓ คำถาม'}</h3>
