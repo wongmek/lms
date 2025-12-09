@@ -31,7 +31,7 @@
     const { useState, useEffect, useRef, createContext, useContext, useMemo } = React;
 
     // CONFIG
-    const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx7c1dJ7WS3YZLtd5Kl9ftO9k_EhHJFPF3FxkVU1eUIkt8pDtPEAythuFmFs3pL2lhEag/exec"; 
+    const GOOGLE_SCRIPT_URL = ""; 
 
     // MOCK
     const mockBackend = (action, data) => {
@@ -183,6 +183,7 @@
     };
 
     // --- ANALYTICS PANEL (NEW) ---
+    // --- ANALYTICS PANEL (FIXED) ---
     const AnalyticsPanel = ({ user }) => {
         const [logs, setLogs] = useState([]);
         const [videos, setVideos] = useState([]);
@@ -196,25 +197,24 @@
                         api.request('getVideos')
                     ]);
                     
-                    // Defensive: Default to empty array if data is undefined/null
-                    const logsData = (resLogs.status === 'success' && Array.isArray(resLogs.data)) ? resLogs.data : [];
-                    const videosData = (resVideos.status === 'success' && Array.isArray(resVideos.data)) ? resVideos.data : [];
+                    // Defensive: Ensure we always have arrays, even if API returns null/undefined/error
+                    const logsData = Array.isArray(resLogs?.data) ? resLogs.data : [];
+                    const videosData = Array.isArray(resVideos?.data) ? resVideos.data : [];
 
-                    // Filter Videos based on ownership (if not admin)
-                    // videosData is guaranteed to be an array here, so .filter will not crash
+                    // Filter Videos based on ownership
                     const userVideos = (user.role === 'admin') 
                         ? videosData 
-                        : videosData.filter(v => v.created_by === user.username);
+                        : videosData.filter(v => v && v.created_by === user.username); // Add check for v
                     
                     const userVideoIds = new Set(userVideos.flatMap(v => {
+                        if (!v) return [];
                         const parsed = parseLessonData(v);
-                        return parsed.topics.map(t => String(t.id));
+                        return parsed.topics ? parsed.topics.map(t => String(t.id)) : [];
                     }));
 
-                    // Filter logs relevant to these videos
-                    // logsData is guaranteed to be an array here
-                    const relevantLogs = logsData.filter(l => userVideoIds.has(String(l.videoId))).map(l => {
-                        const vid = userVideos.flatMap(v => parseLessonData(v).topics).find(t => String(t.id) === String(l.videoId));
+                    // Filter logs
+                    const relevantLogs = logsData.filter(l => l && userVideoIds.has(String(l.videoId))).map(l => {
+                        const vid = userVideos.flatMap(v => parseLessonData(v).topics || []).find(t => String(t.id) === String(l.videoId));
                         return { ...l, videoTitle: vid ? vid.title : 'Unknown Video' };
                     });
 
@@ -228,7 +228,7 @@
                 }
             };
             fetchData();
-        }, []);
+        }, []); // Added dependency array to run only once
 
         return (
             <div className="max-w-5xl mx-auto fade-in">
