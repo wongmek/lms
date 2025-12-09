@@ -196,31 +196,31 @@
                         api.request('getVideos')
                     ]);
                     
-                    // Robust check: Ensure status is success AND data is an array
-                    if (resLogs.status === 'success' && resVideos.status === 'success' && Array.isArray(resLogs.data) && Array.isArray(resVideos.data)) {
-                        // Filter Videos based on ownership (if not admin)
-                        const userVideos = (user.role === 'admin') 
-                            ? resVideos.data 
-                            : resVideos.data.filter(v => v.created_by === user.username);
-                        
-                        const userVideoIds = new Set(userVideos.flatMap(v => {
-                            // Handle Playlist IDs (sub-clips) + Main ID
-                            const parsed = parseLessonData(v);
-                            return parsed.topics.map(t => String(t.id));
-                        }));
+                    // Defensive: Default to empty array if data is undefined/null
+                    const logsData = (resLogs.status === 'success' && Array.isArray(resLogs.data)) ? resLogs.data : [];
+                    const videosData = (resVideos.status === 'success' && Array.isArray(resVideos.data)) ? resVideos.data : [];
 
-                        // Filter logs relevant to these videos
-                        const relevantLogs = resLogs.data.filter(l => userVideoIds.has(String(l.videoId))).map(l => {
-                            // Find Video Title
-                            const vid = userVideos.flatMap(v => parseLessonData(v).topics).find(t => String(t.id) === String(l.videoId));
-                            return { ...l, videoTitle: vid ? vid.title : 'Unknown Video' };
-                        });
+                    // Filter Videos based on ownership (if not admin)
+                    // videosData is guaranteed to be an array here, so .filter will not crash
+                    const userVideos = (user.role === 'admin') 
+                        ? videosData 
+                        : videosData.filter(v => v.created_by === user.username);
+                    
+                    const userVideoIds = new Set(userVideos.flatMap(v => {
+                        const parsed = parseLessonData(v);
+                        return parsed.topics.map(t => String(t.id));
+                    }));
 
-                        setLogs(relevantLogs.reverse()); // Newest first
-                        setVideos(userVideos);
-                    } else {
-                        console.warn("API returned success but no data array found. Check Backend deployment.", resLogs);
-                    }
+                    // Filter logs relevant to these videos
+                    // logsData is guaranteed to be an array here
+                    const relevantLogs = logsData.filter(l => userVideoIds.has(String(l.videoId))).map(l => {
+                        const vid = userVideos.flatMap(v => parseLessonData(v).topics).find(t => String(t.id) === String(l.videoId));
+                        return { ...l, videoTitle: vid ? vid.title : 'Unknown Video' };
+                    });
+
+                    setLogs(relevantLogs.reverse());
+                    setVideos(userVideos);
+
                 } catch (e) {
                     console.error("Analytics Error:", e);
                 } finally {
@@ -236,7 +236,7 @@
                 {user.role === 'teacher' && <p className="text-sm text-gray-500 mb-4">* แสดงเฉพาะผลการเรียนของวิดีโอที่คุณสร้าง</p>}
                 
                 <div className="bg-white rounded-lg shadow overflow-hidden">
-                    {loading ? <div className="p-8 text-center">Loading data...</div> : logs.length === 0 ? <div className="p-8 text-center text-gray-500">ยังไม่มีข้อมูลการเข้าเรียน (หรือ Backend ยังไม่อัปเดต)</div> : (
+                    {loading ? <div className="p-8 text-center">Loading data...</div> : logs.length === 0 ? <div className="p-8 text-center text-gray-500">ยังไม่มีข้อมูลการเข้าเรียน</div> : (
                         <table className="w-full text-left">
                             <thead className="bg-slate-100 border-b">
                                 <tr>
